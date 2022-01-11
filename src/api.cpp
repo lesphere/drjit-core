@@ -389,9 +389,9 @@ uint32_t jit_var_new_cast(uint32_t index, VarType target_type,
 }
 
 uint32_t jit_var_new_gather(uint32_t source, uint32_t index,
-                            uint32_t mask) {
+                            uint32_t mask, uint32_t width) {
     lock_guard guard(state.lock);
-    return jitc_var_new_gather(source, index, mask);
+    return jitc_var_new_gather(source, index, mask, width);
 }
 
 uint32_t jit_var_new_scatter(uint32_t target, uint32_t value,

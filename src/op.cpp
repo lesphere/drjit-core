@@ -1232,8 +1232,11 @@ uint32_t jitc_var_new_op(JitOp op, uint32_t n_dep, const uint32_t *dep) {
                 if (is_float) {
                     stmt = is_single ? "fma.rn.ftz.$t0 $r0, $r1, $r2, $r3"
                                      : "fma.rn.$t0 $r0, $r1, $r2, $r3";
-                } else {
+                } else if (type_size[v[0]->type] == 4) {
                     stmt = "mad.lo.$t0 $r0, $r1, $r2, $r3";
+                } else {
+                    stmt = "mul.lo.$t0 $r0, $r1, $r2$n"
+                           "add.$t0 $r0, $r0, $r3";
                 }
             } else {
                 if (is_float) {
@@ -1537,7 +1540,7 @@ static uint32_t jitc_scatter_gather_index(uint32_t source, uint32_t index) {
     return jitc_var_new_cast(index, target_type, 0);
 }
 
-uint32_t jitc_var_new_gather(uint32_t source, uint32_t index_, uint32_t mask_) {
+uint32_t jitc_var_new_gather(uint32_t source, uint32_t index_, uint32_t mask_, uint32_t width) {
     if (index_ == 0)
         return 0;
     else if (unlikely(source == 0 || mask_ == 0))
@@ -1633,17 +1636,47 @@ uint32_t jitc_var_new_gather(uint32_t source, uint32_t index_, uint32_t mask_) {
     }
 #endif
 
+    if (width != 1 && (backend != JitBackend::CUDA || vt == VarType::Bool ||
+                       (width < 1 || width > 4)))
+        jitc_raise("jitc_var_new_gather(): wide load not supported!");
+
     const char *stmt;
     if (backend == JitBackend::CUDA) {
         if (!index_zero) {
             if (vt != VarType::Bool) {
-                if (unmasked)
-                    stmt = "mad.wide.$t2 %rd3, $r2, $s0, $r1$n"
-                           "ld.global.nc.$t0 $r0, [%rd3]";
-                else
-                    stmt = "mad.wide.$t2 %rd3, $r2, $s0, $r1$n"
-                           "@$r3 ld.global.nc.$t0 $r0, [%rd3]$n"
-                           "@!$r3 mov.$b0 $r0, 0";
+                if (width == 1) {
+                    if (unmasked)
+                        stmt = "mad.wide.$t2 %rd3, $r2, $s0, $r1$n"
+                               "ld.global.nc.$t0 $r0, [%rd3]";
+                    else
+                        stmt = "mad.wide.$t2 %rd3, $r2, $s0, $r1$n"
+                               "@$r3 ld.global.nc.$t0 $r0, [%rd3]$n"
+                               "@!$r3 mov.$b0 $r0, 0";
+                } else if (width == 2) {
+                    if (unmasked)
+                        stmt = ".reg.$t0 $r0_<2>$n"
+                               "mad.wide.$t2 %rd3, $r2, 2*$s0, $r1$n"
+                               "ld.global.nc.v2.$t0 {$r0_0, $r0_1}, [%rd3]";
+                    else
+                        stmt = ".reg.$t0 $r0_<2>$n"
+                               "mad.wide.$t2 %rd3, $r2, 2*$s0, $r1$n"
+                               "@$r3 ld.global.nc.v2.$t0 {$r0_0, $r0_1}, [%rd3]$n"
+                               "@!$r3 mov.$b0 $r0_0, 0$n"
+                               "@!$r3 mov.$b0 $r0_1, 0";
+                } else {
+                    if (unmasked)
+                        stmt = ".reg.$t0 $r0_<4>$n"
+                               "mad.wide.$t2 %rd3, $r2, 4*$s0, $r1$n"
+                               "ld.global.nc.v4.$t0 {$r0_0, $r0_1, $r0_2, $r0_3}, [%rd3]";
+                    else
+                        stmt = ".reg.$t0 $r0_<4>$n"
+                               "mad.wide.$t2 %rd3, $r2, 4*$s0, $r1$n"
+                               "@$r3 ld.global.nc.v4.$t0 {$r0_0, $r0_1, $r0_2, $r0_3}, [%rd3]$n"
+                               "@!$r3 mov.$b0 $r0_0, 0$n"
+                               "@!$r3 mov.$b0 $r0_1, 0$n"
+                               "@!$r3 mov.$b0 $r0_2, 0$n"
+                               "@!$r3 mov.$b0 $r0_3, 0";
+                }
             } else {
                 if (unmasked)
                     stmt = "mad.wide.$t2 %rd3, $r2, $s0, $r1$n"

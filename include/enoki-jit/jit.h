@@ -894,7 +894,7 @@ extern JIT_EXPORT uint32_t jit_var_new_pointer(JIT_ENUM JitBackend backend,
  * \c index must be an integer array, and \c mask must be a boolean array.
  */
 extern JIT_EXPORT uint32_t jit_var_new_gather(uint32_t source, uint32_t index,
-                                              uint32_t mask);
+                                              uint32_t mask, uint32_t width JIT_DEF(1));
 
 #if defined(__cplusplus)
 /// Reduction operations for \ref jit_var_new_scatter() \ref jit_reduce()

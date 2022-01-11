@@ -206,6 +206,7 @@ bool jitc_optix_init() {
     if (jitc_optix_init_attempted)
         return jitc_optix_init_success;
 
+#if 0
     if (jitc_cuda_version_major == 11 && jitc_cuda_version_minor == 5)
         jitc_raise(
             "jit_optix_init(): Enoki-JIT considers the driver of your graphics "
@@ -213,6 +214,7 @@ bool jitc_optix_init() {
             "support OptiX with CUDA 11.5, which roughly corresponds to driver "
             "versions >= 495 and < 510). Please install a newer driver version "
             "(or an older one is fine, too).");
+#endif
 
     jitc_optix_init_attempted = true;
     jitc_optix_handle = nullptr;
