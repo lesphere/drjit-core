@@ -1253,9 +1253,9 @@ void jitc_llvm_ray_trace(uint32_t func, uint32_t scene, int shadow_ray,
         jitc_var_inc_ref(id);
     }
 
-    for (uint32_t i = 0; i < (shadow_ray ? 1 : 6); ++i)
+    for (uint32_t i = 0; i < (shadow_ray ? 1 : 9); ++i)
         out[i] = jitc_var_new_node_1(JitBackend::LLVM, VarKind::Extract,
-                                     i < 3 ? float_type : VarType::UInt32, size,
+                                     i < 6 ? float_type : VarType::UInt32, size,
                                      placeholder, index, jitc_var(index),
                                      (uint64_t) i);
 }
@@ -1462,8 +1462,8 @@ static void jitc_llvm_render_trace(uint32_t index, const Variable *v,
 
     offset = (8 * float_size + 4) * width;
 
-    for (uint32_t i = 0; i < (shadow_ray ? 1 : 6); ++i) {
-        VarType vt = (i < 3) ? float_type : VarType::UInt32;
+    for (uint32_t i = 0; i < (shadow_ray ? 1 : 9); ++i) {
+        VarType vt = (i < 6) ? float_type : VarType::UInt32;
         const char *tname = type_name_llvm[(int) vt];
         uint32_t tsize = type_size[(int) vt];
 
@@ -1474,8 +1474,9 @@ static void jitc_llvm_render_trace(uint32_t index, const Variable *v,
             v, i, v, i, tname,
             v, i, tname, tname, v, i, float_size * width);
 
+        // Skip to geometric normals in structure
         if (i == 0)
-            offset += (4 * float_size + 3 * 4) * width;
+            offset += (float_size + 3 * 4) * width;
         else
             offset += tsize * width;
     }
