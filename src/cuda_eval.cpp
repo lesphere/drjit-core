@@ -815,7 +815,7 @@ static void jitc_cuda_render_scatter(const Variable *v,
         // Intrinsic to perform an intra-warp reduction before writing to global memory
         fmt_intrinsic(
             ".func reduce_$s_$t(.param .u64 ptr,\n"
-            "                              .param .$t value) {\n"
+            "                   .param .$t value) {\n"
             "    .reg .pred %p<14>;\n"
             "    .reg .$t %q<19>;\n"
             "    .reg .b32 %r<41>;\n"
