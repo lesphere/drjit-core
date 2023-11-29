@@ -161,10 +161,11 @@ void jitc_cuda_assemble(ThreadState *ts, ScheduledGroup group,
         const uint32_t vti = v->type,
                        size = v->size;
         const VarType vt = (VarType) vti;
+        const VarKind kind = (VarKind) v->kind;
 
         if (unlikely(print_labels && v->extra)) {
             const char *label = jitc_var_label(index);
-            if (label && *label)
+            if (label && *label && vt != VarType::Void && kind != VarKind::CallOutput)
                 fmt("    // $s\n", label);
         }
 
@@ -295,14 +296,15 @@ void jitc_cuda_assemble_func(const CallData *call, uint32_t inst,
         Variable *v = jitc_var(sv.index);
         const uint32_t vti = v->type;
         const VarType vt = (VarType) vti;
+        const VarKind kind = (VarKind) v->kind;
 
         if (unlikely(print_labels && v->extra)) {
             const char *label = jitc_var_label(sv.index);
-            if (label && *label)
+            if (label && *label && vt != VarType::Void && kind != VarKind::CallOutput)
                 fmt("    // $s\n", label);
         }
 
-        if ((VarKind) v->kind == VarKind::CallInput) {
+        if (kind == VarKind::CallInput) {
             Variable *a = jitc_var(v->dep[0]);
             if (vt != VarType::Bool) {
                 fmt("    ld.param.$b $v, [params+$o];\n", v, v, a);
@@ -726,6 +728,9 @@ static void jitc_cuda_render(uint32_t index, Variable *v) {
                                    a3 ? a3->reg_index : 0);
             break;
 
+        case VarKind::CallOutput:
+            break;
+
         case VarKind::CallSelf:
             fmt("    mov.u32 $v, self;\n", v);
             break;
@@ -1129,6 +1134,7 @@ static void jitc_cuda_render_trace(uint32_t index, const Variable *v,
         problem = true;
     }
 
+#if 0
     const Extra &extra = state.extra[index];
     uint32_t payload_count = extra.n_dep - 15;
 
@@ -1169,6 +1175,7 @@ static void jitc_cuda_render_trace(uint32_t index, const Variable *v,
 
     if (masked)
         fmt("\nl_masked_$u:\n", v->reg_index);
+#endif
 }
 #endif
 

@@ -1091,7 +1091,7 @@ static void jitc_llvm_render_scatter_inc(Variable *v,
         "   %old_2 = insertelement <$w x i32> undef, i32 %old_1, i32 0\n"
         "   %old_3 = shufflevector <$w x i32> %old_2, <$w x i32> undef, <$w x i32> $z\n"
         "   %sum_vec_final = add <$w x i32> %sum_vec_next, %old_3\n"
-        "   br label %L4;\n\n"
+        "   br label %L4\n\n"
         "L4:\n"
         "   %sum_vec_combined = phi <$w x i32> [ %sum_vec_next, %L2 ], [ %sum_vec_final, %L3 ]\n"
         "   ret <$w x i32> %sum_vec_combined\n"

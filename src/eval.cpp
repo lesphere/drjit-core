@@ -731,8 +731,21 @@ void jitc_eval(ThreadState *ts) {
     for (ScheduledVariable sv : schedule) {
         uint32_t index = sv.index;
         Variable *v = jitc_var(index);
-
         v->reg_index = 0;
+
+        if (unlikely(v->extra)) {
+            VariableExtra &extra = state.extra[v->extra];
+            if (extra.callback) {
+                if (extra.callback_internal) {
+                    extra.callback(index, 0, extra.callback_data);
+                } else {
+                    unlock_guard guard_2(state.lock);
+                    extra.callback(index, 0, extra.callback_data);
+                }
+                v = jitc_var(index);
+            }
+        }
+
         if (!(v->output_flag || v->side_effect)) {
             jitc_var_dec_ref(index, v);
             continue;
@@ -749,19 +762,6 @@ void jitc_eval(ThreadState *ts) {
             v->data = sv.data;
             v->output_flag = false;
             v->consumed = false;
-        }
-
-        if (unlikely(v->extra)) {
-            VariableExtra &extra = state.extra[v->extra];
-            if (extra.callback) {
-                if (extra.callback_internal) {
-                    extra.callback(index, 0, extra.callback_data);
-                } else {
-                    unlock_guard guard_2(state.lock);
-                    extra.callback(index, 0, extra.callback_data);
-                }
-                v = jitc_var(index);
-            }
         }
 
         uint32_t dep[4], side_effect = v->side_effect;

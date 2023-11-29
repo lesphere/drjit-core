@@ -122,20 +122,20 @@ OptixDeviceContext jitc_optix_context() {
         sbt.missRecordStrideInBytes = OPTIX_SBT_RECORD_HEADER_SIZE;
         sbt.missRecordCount = 1;
 
-        uint32_t pipeline_index = jitc_optix_configure_pipeline(&pco, mod, &pg, 1);
-        auto it2 = state.extra.find(pipeline_index);
-        if (it2 == state.extra.end())
-            jitc_fail("jitc_optix_context(): 'extra' entry not found!");
-        state.optix_default_pipeline = (OptixPipelineData*) it2->second.callback_data;
+        uint32_t pipeline_index = jitc_optix_configure_pipeline(&pco, mod, &pg, 1),
+                 sbt_index = jitc_optix_configure_sbt(&sbt, pipeline_index);
 
-        uint32_t sbt_index = jitc_optix_configure_sbt(&sbt, pipeline_index);
-        auto it = state.extra.find(sbt_index);
-        if (it == state.extra.end())
-            jitc_fail("jitc_optix_context(): 'extra' entry not found!");
-        state.optix_default_sbt
-            = (OptixShaderBindingTable*) it->second.callback_data;
-
+        state.optix_default_pipeline =
+            (OptixPipelineData *) jitc_var_extra(jitc_var(pipeline_index))
+                ->callback_data;
         state.optix_default_sbt_index = sbt_index;
+        state.optix_default_sbt =
+            (OptixShaderBindingTable *) jitc_var_extra(jitc_var(sbt_index))
+                ->callback_data;
+
+        if (!state.optix_default_pipeline || !state.optix_default_sbt)
+            jitc_fail("jitc_optix_context(): could not find default pipeline/SBT entries!");
+
         jitc_var_dec_ref(pipeline_index);
     }
 
@@ -170,9 +170,7 @@ uint32_t jitc_optix_configure_pipeline(const OptixPipelineCompileOptions *pco,
                             VarType::Void, 1, 0, (uintptr_t) p);
 
     // Free pipeline resources when this variable is destroyed
-    Extra &extra = state.extra[index];
-    extra.callback_data = p;
-    extra.callback = [](uint32_t /*index*/, int free, void *ptr) {
+    auto callback = [](uint32_t /*index*/, int free, void *ptr) {
         if (!free)
             return;
         jitc_log(InfoSym, "jit_optix_configure_pipeline(): free optix pipeline");
@@ -182,6 +180,8 @@ uint32_t jitc_optix_configure_pipeline(const OptixPipelineCompileOptions *pco,
         jitc_optix_check(optixModuleDestroy(p->module));
         delete p;
     };
+
+    jitc_var_set_callback(index, callback, p, true);
 
     return index;
 }
@@ -204,9 +204,7 @@ uint32_t jitc_optix_configure_sbt(const OptixShaderBindingTable *sbt,
         jitc_var(pipeline), (uintptr_t) p);
 
     // Free SBT resources when this variable is destroyed
-    Extra &extra = state.extra[index];
-    extra.callback_data = p;
-    extra.callback = [](uint32_t /*index*/, int free, void *ptr) {
+    auto callback = [](uint32_t /*index*/, int free, void *ptr) {
         if (!free)
             return;
         jitc_log(InfoSym, "jit_optix_configure_sbt(): free optix shader binding table");
@@ -216,12 +214,14 @@ uint32_t jitc_optix_configure_sbt(const OptixShaderBindingTable *sbt,
         delete sbt;
     };
 
+    jitc_var_set_callback(index, callback, p, true);
+
     return index;
 }
 
 void jitc_optix_update_sbt(uint32_t index, const OptixShaderBindingTable *sbt) {
-    Extra &extra = state.extra[index];
-    memcpy(extra.callback_data, sbt, sizeof(OptixShaderBindingTable));
+    memcpy(jitc_var_extra(jitc_var(index))->callback_data, sbt,
+           sizeof(OptixShaderBindingTable));
 }
 
 bool jitc_optix_compile(ThreadState *ts, const char *buf, size_t buf_size,
@@ -568,6 +568,7 @@ void jitc_optix_ray_trace(uint32_t n_args, uint32_t *args, uint32_t mask,
     Variable *v = jitc_var(index);
     v->extra = v->optix = 1;
 
+#if 0
     Extra &extra = state.extra[index];
     extra.n_dep = n_args;
     extra.dep = (uint32_t *) malloc_check(sizeof(uint32_t) * extra.n_dep);
@@ -581,6 +582,7 @@ void jitc_optix_ray_trace(uint32_t n_args, uint32_t *args, uint32_t mask,
         args[15 + i] = jitc_var_new_node_1(
             JitBackend::CUDA, VarKind::Extract, VarType::UInt32,
             size, symbolic, index, jitc_var(index), (uint64_t) i);
+#endif
 }
 
 void jitc_optix_check_impl(OptixResult errval, const char *file,
