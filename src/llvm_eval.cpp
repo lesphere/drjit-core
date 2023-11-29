@@ -63,7 +63,7 @@
 #include "internal.h"
 #include "log.h"
 #include "var.h"
-#include "vcall.h"
+#include "call.h"
 #include "loop.h"
 #include "op.h"
 
@@ -82,7 +82,7 @@
     } while (0)
 
 // Forward declaration
-static void jitc_llvm_render_var(uint32_t index, Variable *v);
+static void jitc_llvm_render(uint32_t index, Variable *v);
 static void jitc_llvm_render_scatter(const Variable *v, const Variable *ptr,
                                      const Variable *value, const Variable *index,
                                      const Variable *mask);
@@ -113,19 +113,13 @@ void jitc_llvm_assemble(ThreadState *ts, ScheduledGroup group) {
         Variable *v = jitc_var(index);
         uint32_t vti = v->type;
         VarType vt = (VarType) vti;
+        VarKind kind = (VarKind) v->kind;
         uint32_t size = v->size;
 
-        /// If a variable has a custom code generation hook, call it
-        if (unlikely(v->extra)) {
-            auto it = state.extra.find(index);
-            if (it == state.extra.end())
-                jitc_fail("jit_assemble_llvm(): internal error: 'extra' entry not found!");
-
-            if (print_labels && vt != VarType::Void) {
-                const char *label =  jitc_var_label(index);
-                if (label && label[0])
-                    fmt("    ; $s\n", label);
-            }
+        if (unlikely(print_labels && v->extra)) {
+            const char *label = jitc_var_label(index);
+            if (label && *label && vt != VarType::Void && kind != VarKind::CallOutput)
+                fmt("    ; $s\n", label);
         }
 
         /// Determine source/destination address of input/output parameters
@@ -181,7 +175,7 @@ void jitc_llvm_assemble(ThreadState *ts, ScheduledGroup group) {
                 v, v, v, v,
                 v, v, v, v);
         } else {
-            jitc_llvm_render_var(index, v);
+            jitc_llvm_render(index, v);
         }
 
         v = jitc_var(index); // `v` might have been invalidated during its assembly
@@ -219,7 +213,7 @@ void jitc_llvm_assemble(ThreadState *ts, ScheduledGroup group) {
 
         if (alloca_size >= 0)
             fmt("    %buffer = alloca i8, i32 $u, align $u\n",
-                alloca_size, alloca_align);
+                (uint32_t) alloca_size, (uint32_t) alloca_align);
 
         buffer.move_suffix(suffix_start, suffix_target);
     }
@@ -269,26 +263,22 @@ void jitc_llvm_assemble(ThreadState *ts, ScheduledGroup group) {
 
     put(" }");
 
-    jitc_vcall_upload(ts);
+    jitc_call_upload(ts);
 }
 
-void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
-                             uint32_t in_size, uint32_t data_offset,
-                             const tsl::robin_map<uint64_t, uint32_t, UInt64Hasher> &data_map,
-                             uint32_t n_out, const uint32_t *out_nested,
-                             bool use_self) {
+void jitc_llvm_assemble_func(const CallData *call, uint32_t inst) {
     bool print_labels = std::max(state.log_level_stderr,
                                  state.log_level_callback) >= LogLevel::Trace ||
                         (jitc_flags() & (uint32_t) JitFlag::PrintIR);
     uint32_t width = jitc_llvm_vector_width, callables_local = callable_count;
-    if (use_self)
+    if (call->use_self)
         fmt("define void @func_^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^("
                     "<$w x i1> %mask, <$w x i32> %self, {i8*} noalias %params");
     else
         fmt("define void @func_^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^("
                     "<$w x i1> %mask, {i8*} noalias %params");
 
-    if (!data_map.empty()) {
+    if (!call->data_map.empty()) {
         if (callable_depth == 1)
             fmt(", {i8*} noalias %data, <$w x i32> %offsets");
         else
@@ -297,32 +287,26 @@ void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
 
     fmt(") #0 ${\n"
         "entry:\n"
-        "    ; VCall: $s\n", name);
+        "    ; Call: $s\n", call->name.c_str());
 
     alloca_size = alloca_align = -1;
 
     for (ScheduledVariable &sv : schedule) {
         Variable *v = jitc_var(sv.index);
         VarType vt = (VarType) v->type;
+        VarKind kind = (VarKind) v->kind;
 
-        if (unlikely(v->extra)) {
-            auto it = state.extra.find(sv.index);
-            if (it == state.extra.end())
-                jitc_fail("jit_assemble_llvm(): internal error: 'extra' entry "
-                          "not found!");
-
-            if (print_labels && vt != VarType::Void) {
-                const char *label =  jitc_var_label(sv.index);
-                if (label && label[0])
-                    fmt("    ; $s\n", label);
-            }
+        if (unlikely(print_labels && v->extra)) {
+            const char *label = jitc_var_label(sv.index);
+            if (label && *label && vt != VarType::Void && kind != VarKind::CallOutput)
+                fmt("    ; $s\n", label);
         }
 
-        if (v->vcall_iface) {
+        if (kind == VarKind::CallInput) {
             fmt( "    $v_i{0|1} = getelementptr inbounds i8, {i8*} %params, i64 $u\n"
                 "{    $v_i1 = bitcast i8* $v_i0 to $M*\n|}"
                  "    $v$s = load $M, {$M*} $v_i1, align $A\n",
-                v, v->param_offset * width,
+                v, jitc_var(v->dep[0])->param_offset * width,
                 v, v, v,
                 v, vt == VarType::Bool ? "_i2" : "", v, v, v, v);
 
@@ -330,11 +314,14 @@ void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
                 fmt("    $v = trunc $M $v_i2 to $T\n",
                     v, v, v, v);
         } else if (v->is_evaluated() || vt == VarType::Pointer) {
-            uint64_t key = (uint64_t) sv.index + (((uint64_t) inst_id) << 32);
-            auto it = data_map.find(key);
-            if (unlikely(it == data_map.end()))
+            uint64_t key = (uint64_t) sv.index + (((uint64_t) inst) << 32);
+            auto it = call->data_map.find(key);
+            if (unlikely(it == call->data_map.end())) {
                 jitc_fail("jitc_llvm_assemble_func(): could not find entry for "
                           "variable r%u in 'data_map'", sv.index);
+                continue;
+            }
+
             if (it->second == (uint32_t) -1)
                 jitc_fail(
                     "jitc_llvm_assemble_func(): variable r%u is referenced by "
@@ -345,7 +332,7 @@ void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
             fmt_intrinsic("declare $M @llvm.masked.gather.v$w$h(<$w x {$m*}>, i32, <$w x i1>, $M)",
                           v, v, v, v);
 
-            uint32_t offset = it->second - data_offset;
+            uint32_t offset = it->second - call->data_offset[inst];
             bool is_pointer_or_bool =
                 (vt == VarType::Pointer) || (vt == VarType::Bool);
             // Expand $<..$> only when we are compiling a recursive function call
@@ -367,23 +354,25 @@ void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
                 fmt("    $v = trunc <$w x i8> $v_p4 to <$w x i1>\n",
                     v, v);
         } else {
-            jitc_llvm_render_var(sv.index, v);
+            jitc_llvm_render(sv.index, v);
         }
     }
 
-    uint32_t output_offset = in_size * width;
+    const uint32_t n_out = (uint32_t) call->outer_out.size();
     for (uint32_t i = 0; i < n_out; ++i) {
-        uint32_t index = out_nested[i];
-        if (!index)
+        const Variable *v = jitc_var(call->inner_out[inst * n_out + i]);
+        const uint32_t offset = call->out_offset[i];
+
+        if (offset == (uint32_t) -1)
             continue;
-        const Variable *v = jitc_var(index);
+
         uint32_t vti = v->type;
         const VarType vt = (VarType) vti;
 
         fmt( "    %out_$u_{0|1} = getelementptr inbounds i8, {i8*} %params, i64 $u\n"
             "{    %out_$u_1 = bitcast i8* %out_$u_0 to $M*\n|}"
              "    %out_$u_2 = load $M, {$M*} %out_$u_1, align $A\n",
-            i, output_offset,
+            i, offset * width,
             i, i, v,
             i, v, v, i, v);
 
@@ -398,8 +387,6 @@ void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
 
         fmt("    store $M %out_$u_3, {$M*} %out_$u_1, align $A\n",
             v, i, v, i, v);
-
-        output_offset += type_size[vti] * width;
     }
 
     /* The function requires extra memory or uses callables. Insert
@@ -414,7 +401,7 @@ void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
 
         if (alloca_size >= 0)
             fmt("    %buffer = alloca i8, i32 $u, align $u\n",
-                alloca_size, alloca_align);
+                (uint32_t) alloca_size, (uint32_t) alloca_align);
 
         buffer.move_suffix(suffix_start, suffix_target);
     }
@@ -423,7 +410,7 @@ void jitc_llvm_assemble_func(const char *name, uint32_t inst_id,
         "}");
 }
 
-static void jitc_llvm_render_var(uint32_t index, Variable *v) {
+static void jitc_llvm_render(uint32_t index, Variable *v) {
     const char *stmt = nullptr;
     Variable *a0 = v->dep[0] ? jitc_var(v->dep[0]) : nullptr,
              *a1 = v->dep[1] ? jitc_var(v->dep[1]) : nullptr,
@@ -817,14 +804,6 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v) {
             jitc_llvm_render_scatter_kahan(v, index);
             break;
 
-        case VarKind::VCallMask:
-            fmt("    $v = bitcast <$w x i1> %mask to <$w x i1>\n", v);
-            break;
-
-        case VarKind::VCallSelf:
-            fmt("    $v = bitcast <$w x i32> %self to <$w x i32>\n", v);
-            break;
-
         case VarKind::Counter:
             fmt("    $v_0 = trunc i64 %index to $t\n"
                 "    $v_1 = insertelement $T undef, $t $v_0, i32 0\n"
@@ -843,10 +822,22 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v) {
                 v, v, v, v, v, v, a0, v);
             break;
 
-        case VarKind::Dispatch:
-            jitc_var_vcall_assemble((VCall *) state.extra[index].callback_data,
-                                    a0->reg_index, a1->reg_index, a2->reg_index,
-                                    a3 ? a3->reg_index : 0);
+        case VarKind::Call:
+            jitc_var_call_assemble((CallData *) v->data, v->reg_index,
+                                   a0->reg_index, a1->reg_index, a2->reg_index,
+                                   a3 ? a3->reg_index : 0);
+            break;
+
+        case VarKind::CallMask:
+            fmt("    $v = bitcast <$w x i1> %mask to <$w x i1>\n", v);
+            break;
+
+        case VarKind::CallSelf:
+            fmt("    $v = bitcast <$w x i32> %self to <$w x i32>\n", v);
+            break;
+
+        case VarKind::CallOutput:
+            // No code generated for this node
             break;
 
         case VarKind::TraceRay:
@@ -859,7 +850,7 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v) {
             break;
 
         case VarKind::LoopStart: {
-                const LoopData *ld = (LoopData *) state.extra[index].callback_data;
+                const LoopData *ld = (LoopData *) v->data;
                 fmt("    br label %l_$u_before\n\n"
                     "l_$u_before:\n"
                     "    br label %l_$u_cond\n\n"
@@ -889,12 +880,12 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v) {
             break;
 
         case VarKind::LoopPhi: {
-                const LoopData *ld = (LoopData *) state.extra[v->dep[0]].callback_data;
+                const LoopData *ld = (LoopData *) a0->data;
                 size_t index = (size_t) v->literal;
-                Variable *inner_in  = jitc_var(ld->inner_inputs[index]),
-                         *outer_in  = jitc_var(ld->outer_inputs[index]),
-                         *inner_out = jitc_var(ld->inner_outputs[index]),
-                         *outer_out = jitc_var(ld->outer_outputs[index]);
+                Variable *inner_in  = jitc_var(ld->inner_in[index]),
+                         *outer_in  = jitc_var(ld->outer_in[index]),
+                         *inner_out = jitc_var(ld->inner_out[index]),
+                         *outer_out = jitc_var(ld->outer_out[index]);
                 fmt("    $v = phi $T [ $v, %l_$u_before ], [ $v, %l_$u_end ] \n",
                     v, v, outer_in, a0->reg_index, inner_out, a0->reg_index);
                 if (outer_out)
@@ -902,29 +893,27 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v) {
             }
             break;
 
-        case VarKind::LoopResult:
+        case VarKind::LoopOutput:
             // No code generated for this node
             break;
 
         default:
-            jitc_fail("jitc_llvm_render_var(): unhandled node kind \"%s\"!",
+            jitc_fail("jitc_llvm_render(): unhandled node kind \"%s\"!",
                       var_kind_name[(uint32_t) v->kind]);
     }
 
     if (f32_upcast) {
-        Variable* b = const_cast<Variable*>(v);
-        b->type = (uint32_t)VarType::Float16;
+        Variable *b = const_cast<Variable *>(v);
+        b->type = (uint32_t) VarType::Float16;
         for (size_t i = 0; i < 4; ++i) {
             Variable* dep = b->dep[i] ? jitc_var(b->dep[i]) : nullptr;
             if (dep)
                 dep->type = (uint32_t)VarType::Float16;
         }
 
-        fmt("    %h$u = fptrunc <$w x float> %f$u to <$w x half>\n", 
+        fmt("    %h$u = fptrunc <$w x float> %f$u to <$w x half>\n",
             v->reg_index, v->reg_index);
     }
-
-
 }
 
 static void jitc_llvm_render_scatter(const Variable *v,
@@ -1113,6 +1102,9 @@ static void jitc_llvm_render_scatter_inc(Variable *v,
 }
 
 static void jitc_llvm_render_scatter_kahan(const Variable *v, uint32_t v_index) {
+    (void) v;
+    (void) v_index;
+#if 0
     const Extra &extra = state.extra[v_index];
     const Variable *ptr_1 = jitc_var(extra.dep[0]),
                    *ptr_2 = jitc_var(extra.dep[1]),
@@ -1190,6 +1182,7 @@ static void jitc_llvm_render_scatter_kahan(const Variable *v, uint32_t v_index) 
         v, v,
         v, v_index, v_index,
         v_index);
+#endif
 }
 
 
@@ -1260,8 +1253,8 @@ void jitc_llvm_ray_trace(uint32_t func, uint32_t scene, int shadow_ray,
         symbolic, func, jitc_var(func), scene,
         jitc_var(scene), (uint64_t) shadow_ray));
 
+#if 0
     Variable *v = jitc_var(index);
-    v->extra = 1;
 
     Extra &extra = state.extra[index];
     extra.n_dep = n_args;
@@ -1277,6 +1270,9 @@ void jitc_llvm_ray_trace(uint32_t func, uint32_t scene, int shadow_ray,
                                      i < 3 ? float_type : VarType::UInt32, size,
                                      symbolic, index, jitc_var(index),
                                      (uint64_t) i);
+#else
+    (void) out;
+#endif
 }
 
 static void jitc_llvm_render_trace(uint32_t index, const Variable *v,
@@ -1304,6 +1300,12 @@ static void jitc_llvm_render_trace(uint32_t index, const Variable *v,
         18 uint32_t primID
         19 uint32_t geomID
         20 uint32_t instID[] */
+#if 1
+    (void) index;
+    (void) v;
+    (void) func;
+    (void) scene;
+#else
     const Extra &extra = state.extra[index];
     bool shadow_ray = v->literal == 1;
     VarType float_type = jitc_var_type(extra.dep[2]);
@@ -1500,19 +1502,18 @@ static void jitc_llvm_render_trace(uint32_t index, const Variable *v,
     }
 
     put("    ; -------------------\n\n");
+#endif
 }
 
 /// Virtual function call code generation -- LLVM IR-specific bits
-void jitc_var_vcall_assemble_llvm(VCall *vcall, uint32_t vcall_reg,
-                                  uint32_t self_reg, uint32_t mask_reg,
-                                  uint32_t offset_reg, uint32_t data_reg,
-                                  uint32_t n_out, uint32_t in_size,
-                                  uint32_t in_align, uint32_t out_size,
-                                  uint32_t out_align) {
-
-    uint32_t width = jitc_llvm_vector_width;
-    alloca_size  = std::max(alloca_size, (int32_t) ((in_size + out_size) * width));
-    alloca_align = std::max(alloca_align, (int32_t) (std::max(in_align, out_align) * width));
+void jitc_var_call_assemble_llvm(CallData *call, uint32_t call_reg,
+                                 uint32_t self_reg, uint32_t mask_reg,
+                                 uint32_t offset_reg, uint32_t data_reg,
+                                 uint32_t buf_size, uint32_t buf_align) {
+    // Allocate enough stack memory for both inputs and outputs
+    const uint32_t width = jitc_llvm_vector_width;
+    alloca_size  = std::max(alloca_size, int(buf_size * width));
+    alloca_align = std::max(alloca_align, int(buf_align * width));
 
     // =====================================================
     // 1. Declare a few intrinsics that we will use
@@ -1529,82 +1530,71 @@ void jitc_var_vcall_assemble_llvm(VCall *vcall, uint32_t vcall_reg,
                   "$}");
 
     fmt_intrinsic("declare i32 @llvm$e.vector.reduce.umax.v$wi32(<$w x i32>)");
-    fmt_intrinsic("declare <$w x i64> @llvm.masked.gather.v$wi64(<$w x {i64*}>, i32, <$w x i1>, <$w x i64>)");
+    fmt_intrinsic("declare <$w x i64> @llvm.masked.gather.v$wi64(<$w x "
+                  "{i64*}>, i32, <$w x i1>, <$w x i64>)");
 
     fmt( "\n"
          "    br label %l$u_start\n"
          "\nl$u_start:\n"
-         "    ; VCall: $s\n"
+         "    ; Call: $s\n"
         "{    %u$u_self_ptr_0 = bitcast $<i8*$> %rd$u to $<i64*$>\n|}"
          "    %u$u_self_ptr = getelementptr i64, $<{i64*}$> {%u$u_self_ptr_0|%rd$u}, <$w x i32> %r$u\n"
          "    %u$u_self_combined = call <$w x i64> @llvm.masked.gather.v$wi64(<$w x {i64*}> %u$u_self_ptr, i32 8, <$w x i1> %p$u, <$w x i64> $z)\n"
          "    %u$u_self_initial = trunc <$w x i64> %u$u_self_combined to <$w x i32>\n",
-        vcall_reg, vcall_reg, vcall->name,
-        vcall_reg, offset_reg,
-        vcall_reg, vcall_reg, offset_reg, self_reg,
-        vcall_reg, vcall_reg, mask_reg,
-        vcall_reg, vcall_reg);
+        call_reg, call_reg, call->name.c_str(),
+        call_reg, offset_reg,
+        call_reg, call_reg, offset_reg, self_reg,
+        call_reg, call_reg, mask_reg,
+        call_reg, call_reg);
 
     if (data_reg) {
         fmt("    %u$u_offset_1 = lshr <$w x i64> %u$u_self_combined, <",
-                 vcall_reg, vcall_reg);
+                 call_reg, call_reg);
         for (uint32_t i = 0; i < width; ++i)
             fmt("i64 32$s", i + 1 < width ? ", " : "");
         fmt(">\n"
             "    %u$u_offset = trunc <$w x i64> %u$u_offset_1 to <$w x i32>\n",
-            vcall_reg, vcall_reg);
+            call_reg, call_reg);
     }
 
     // =====================================================
     // 2. Pass the input arguments
     // =====================================================
 
-    uint32_t offset = 0;
-    for (uint32_t i = 0; i < (uint32_t) vcall->in.size(); ++i) {
-        uint32_t index = vcall->in[i];
-        if (!index)
+    for (uint32_t i = 0; i < call->n_in; ++i) {
+        const Variable *v = jitc_var(call->outer_in[i]);
+        if (!v->reg_index)
             continue;
-        const Variable *v2 = jitc_var(index);
-
-        fmt(
-             "    %u$u_in_$u_{0|1} = getelementptr inbounds i8, {i8*} %buffer, i32 $u\n"
+        fmt( "    %u$u_in_$u_{0|1} = getelementptr inbounds i8, {i8*} %buffer, i32 $u\n"
             "{    %u$u_in_$u_1 = bitcast i8* %u$u_in_$u_0 to $M*\n|}",
-            vcall_reg, i, offset,
-            vcall_reg, i, vcall_reg, i, v2
+            call_reg, i, v->param_offset * width,
+            call_reg, i, call_reg, i, v
         );
 
-        if ((VarType) v2->type != VarType::Bool) {
+        if ((VarType) v->type != VarType::Bool) {
             fmt("    store $V, {$T*} %u$u_in_$u_1, align $A\n",
-                v2, v2, vcall_reg, i, v2);
+                v, v, call_reg, i, v);
         } else {
             fmt("    %u$u_$u_zext = zext $V to $M\n"
                 "    store $M %u$u_$u_zext, {$M*} %u$u_in_$u_1, align $A\n",
-                vcall_reg, i, v2, v2,
-                v2, vcall_reg, i, v2, vcall_reg, i, v2);
+                call_reg, i, v, v,
+                v, call_reg, i, v, call_reg, i, v);
         }
-
-        offset += type_size[v2->type] * width;
     }
 
-    if (out_size)
-        fmt("    %u$u_out = getelementptr i8, {i8*} %buffer, i32 $u\n",
-            vcall_reg, in_size * width);
-
-    offset = 0;
-    for (uint32_t i = 0; i < n_out; ++i) {
-        uint32_t index = vcall->out_nested[i];
-        if (!index)
+    for (uint32_t i = 0; i < call->n_out; ++i) {
+        uint32_t offset = call->out_offset[i];
+        if (offset == (uint32_t) -1)
             continue;
-        const Variable *v2 = jitc_var(index);
 
-        fmt( "    %u$u_tmp_$u_{0|1} = getelementptr inbounds i8, {i8*} %u$u_out, i64 $u\n"
+        const Variable *v = jitc_var(call->inner_out[i]);
+
+        fmt( "    %u$u_tmp_$u_{0|1} = getelementptr inbounds i8, {i8*} %buffer, i64 $u\n"
             "{    %u$u_tmp_$u_1 = bitcast i8* %u$u_tmp_$u_0 to $M*\n|}"
              "    store $M $z, {$M*} %u$u_tmp_$u_1, align $A\n",
-            vcall_reg, i, vcall_reg, offset,
-            vcall_reg, i, vcall_reg, i, v2,
-            v2, v2, vcall_reg, i, v2);
-
-        offset += type_size[v2->type] * width;
+            call_reg, i, offset * width,
+            call_reg, i, call_reg, i, v,
+            v, v, call_reg, i, v);
     }
 
     // =====================================================
@@ -1614,16 +1604,16 @@ void jitc_var_vcall_assemble_llvm(VCall *vcall, uint32_t vcall_reg,
     fmt("    br label %l$u_check\n"
         "\nl$u_check:\n"
         "    %u$u_self = phi <$w x i32> [ %u$u_self_initial, %l$u_start ], [ %u$u_self_next, %l$u_call ]\n",
-        vcall_reg,
-        vcall_reg,
-        vcall_reg, vcall_reg, vcall_reg, vcall_reg, vcall_reg);
+        call_reg,
+        call_reg,
+        call_reg, call_reg, call_reg, call_reg, call_reg);
 
     fmt("    %u$u_next = call i32 @llvm$e.vector.reduce.umax.v$wi32(<$w x i32> %u$u_self)\n"
         "    %u$u_valid = icmp ne i32 %u$u_next, 0\n"
         "    br i1 %u$u_valid, label %l$u_call, label %l$u_end\n",
-        vcall_reg, vcall_reg,
-        vcall_reg, vcall_reg,
-        vcall_reg, vcall_reg, vcall_reg);
+        call_reg, call_reg,
+        call_reg, call_reg,
+        call_reg, call_reg, call_reg);
 
     fmt("\nl$u_call:\n"
         "    %u$u_bcast_0 = insertelement <$w x i32> undef, i32 %u$u_next, i32 0\n"
@@ -1631,20 +1621,20 @@ void jitc_var_vcall_assemble_llvm(VCall *vcall, uint32_t vcall_reg,
         "    %u$u_active = icmp eq <$w x i32> %u$u_self, %u$u_bcast\n"
         "    %u$u_func_0 = getelementptr inbounds {i8*}, {i8**} %callables, i32 %u$u_next\n"
         "    %u$u_func{_1|} = load {i8*}, {i8**} %u$u_func_0\n",
-        vcall_reg,
-        vcall_reg, vcall_reg, // bcast_0
-        vcall_reg, vcall_reg, // bcast
-        vcall_reg, vcall_reg, vcall_reg, // active
-        vcall_reg, vcall_reg, // func_0
-        vcall_reg, vcall_reg // func_1
+        call_reg,
+        call_reg, call_reg, // bcast_0
+        call_reg, call_reg, // bcast
+        call_reg, call_reg, call_reg, // active
+        call_reg, call_reg, // func_0
+        call_reg, call_reg // func_1
     );
 
     // Cast into correctly typed function pointer
     if (!jitc_llvm_opaque_pointers) {
         fmt("    %u$u_func = bitcast i8* %u$u_func_1 to void (<$w x i1>",
-                 vcall_reg, vcall_reg);
+                 call_reg, call_reg);
 
-        if (vcall->use_self)
+        if (call->use_self)
             fmt(", <$w x i32>");
 
         fmt(", i8*");
@@ -1656,60 +1646,45 @@ void jitc_var_vcall_assemble_llvm(VCall *vcall, uint32_t vcall_reg,
 
     // Perform the actual function call
     fmt("    call void %u$u_func(<$w x i1> %u$u_active",
-        vcall_reg, vcall_reg);
+        call_reg, call_reg);
 
-    if (vcall->use_self)
+    if (call->use_self)
         fmt(", <$w x i32> %r$u", self_reg);
 
     fmt(", {i8*} %buffer");
 
     if (data_reg)
-        fmt(", $<{i8*}$> %rd$u, <$w x i32> %u$u_offset", data_reg, vcall_reg);
+        fmt(", $<{i8*}$> %rd$u, <$w x i32> %u$u_offset", data_reg, call_reg);
 
     fmt(")\n"
         "    %u$u_self_next = select <$w x i1> %u$u_active, <$w x i32> $z, <$w x i32> %u$u_self\n"
         "    br label %l$u_check\n"
         "\nl$u_end:\n",
-        vcall_reg, vcall_reg, vcall_reg, vcall_reg,
-        vcall_reg);
+        call_reg, call_reg, call_reg, call_reg,
+        call_reg);
 
     // =====================================================
     // 5. Read back the output arguments
     // =====================================================
 
-    offset = 0;
-    for (uint32_t i = 0; i < n_out; ++i) {
-        uint32_t index = vcall->out_nested[i],
-                 index_2 = vcall->out[i];
-        if (!index)
+    for (uint32_t i = 0; i < call->n_out; ++i) {
+        const Variable *v = jitc_var(call->outer_out[i]);
+        if (!v || !v->reg_index)
             continue;
 
-        const Variable *v = jitc_var(index);
-        uint32_t size = type_size[v->type],
-                 load_offset = offset;
-        offset += size * width;
+        bool is_bool = (VarType) v->type == VarType::Bool;
 
-        // Skip if outer access expired
-        if (!index_2)
-            continue;
-
-        const Variable *v2 = jitc_var(index_2);
-        if (v2->reg_index == 0 || v2->param_type == ParamType::Input)
-            continue;
-
-        VarType vt = (VarType) v2->type;
-
-        fmt( "    %u$u_out_$u_{0|1} = getelementptr inbounds i8, {i8*} %u$u_out, i64 $u\n"
+        fmt( "    %u$u_out_$u_{0|1} = getelementptr inbounds i8, {i8*} %buffer, i64 $u\n"
             "{    %u$u_out_$u_1 = bitcast i8* %u$u_out_$u_0 to $M*\n|}"
              "    $v$s = load $M, {$M*} %u$u_out_$u_1, align $A\n",
-            vcall_reg, i, vcall_reg, load_offset,
-            vcall_reg, i, vcall_reg, i, v2,
-            v2, vt == VarType::Bool ? "_0" : "", v2, v2, vcall_reg, i, v2);
+            call_reg, i, call->out_offset[i] * width,
+            call_reg, i, call_reg, i, v,
+            v, is_bool ? "_0" : "", v, v, call_reg, i, v);
 
-            if (vt == VarType::Bool)
-                fmt("    $v = trunc $M $v_0 to $T\n", v2, v2, v2, v2);
+            if (is_bool)
+                fmt("    $v = trunc $M $v_0 to $T\n", v, v, v, v);
     }
 
     fmt("    br label %l$u_done\n"
-        "\nl$u_done:\n", vcall_reg, vcall_reg);
+        "\nl$u_done:\n", call_reg, call_reg);
 }

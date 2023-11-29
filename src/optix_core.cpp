@@ -169,8 +169,6 @@ uint32_t jitc_optix_configure_pipeline(const OptixPipelineCompileOptions *pco,
         jitc_var_new_node_0(JitBackend::CUDA, VarKind::Nop,
                             VarType::Void, 1, 0, (uintptr_t) p);
 
-    jitc_var(index)->extra = 1;
-
     // Free pipeline resources when this variable is destroyed
     Extra &extra = state.extra[index];
     extra.callback_data = p;
@@ -204,8 +202,6 @@ uint32_t jitc_optix_configure_sbt(const OptixShaderBindingTable *sbt,
     uint32_t index = jitc_var_new_node_1(
         JitBackend::CUDA, VarKind::Nop, VarType::Void, 1, 0, pipeline,
         jitc_var(pipeline), (uintptr_t) p);
-
-    jitc_var(index)->extra = 1;
 
     // Free SBT resources when this variable is destroyed
     Extra &extra = state.extra[index];
@@ -424,7 +420,7 @@ bool jitc_optix_compile(ThreadState *ts, const char *buf, size_t buf_size,
         jitc_log(Error, "jit_optix_compile(): an OptiX program is using "
                         "continuous callables which is not supported by Dr.Jit!");
 
-    unsigned int max_dc_depth = 2; // Support nested VCalls
+    unsigned int max_dc_depth = 2; // Support nested Calls
     unsigned int dc_stack_size_from_traversal = 0; // DC is not invoked from IS or AH.
     unsigned int dc_stack_size_from_state = max_dc_depth * ssp.dssDC; // DC is invoked from RG, MS, or CH.
     unsigned int continuation_stack_size = ssp.cssRG + std::max(std::max(ssp.cssCH, ssp.cssMS), ssp.cssAH + ssp.cssIS);
