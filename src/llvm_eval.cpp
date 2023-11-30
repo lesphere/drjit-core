@@ -249,7 +249,8 @@ void jitc_llvm_assemble(ThreadState *ts, ScheduledGroup group) {
     // LLVM doesn't populate target features on AArch64 devices. Use
     // a representative subset from a recent machine (Apple M1)
     if (!has_target_features) {
-        target_features = "+fp-armv8,+fp16fml,+fullfp16,+lse,+neon,+ras,+rcpc,+rdm,+v8.1a,+v8.2a,+v8.3a,+v8.4a,+v8.5a,+v8a";
+        target_features = "+fp-armv8,+fp16fml,+fullfp16,+lse,+neon,+ras,+rcpc,"
+                          "+rdm,+v8.1a,+v8.2a,+v8.3a,+v8.4a,+v8.5a,+v8a";
         has_target_features = true;
     }
 #else
@@ -1067,44 +1068,57 @@ static void jitc_llvm_render_scatter_inc(Variable *v,
                                          const Variable *ptr,
                                          const Variable *index,
                                          const Variable *mask) {
-    fmt( "    $v_1 = extractelement $V, i32 0\n"
-        "{    $v_2 = bitcast i8* $v to i32*\n"
-         "    $v_3 = getelementptr i32, i32* $v_2, i32 $v_1\n|"
-         "    $v_3 = getelementptr i32, ptr $v, i32 $v_1\n}"
-         "    $v = call $T @reduce_inc_u32({$t*} $v_3, $V)\n",
-        v, index,
+    fmt("{    $v_0 = bitcast $<i8*$> $v to $<i32*$>\n|}"
+         "    $v_1 = getelementptr i32, $<{i32*}$> {$v_0|$v}, $V\n"
+         "    $v = call $T @reduce_inc_u32(<$w x {i32*}> $v_1, $V)\n",
         v, ptr,
-        v, v, v,
-        v, ptr, v,
-        v, v, v, v, mask);
+        v, v, ptr, index,
+        v, v, v, mask);
+
+    fmt_intrinsic("declare i32 @llvm.cttz.i32(i32, i1)");
+    fmt_intrinsic("declare i64 @llvm.vector.reduce.umax.v$wi64(<$w x i64>)");
 
     fmt_intrinsic(
-        "define internal <$w x i32> @reduce_inc_u32({i32*} %ptr, <$w x i1> %active) #0 ${\n"
+        "define internal <$w x i32> @reduce_inc_u32(<$w x {i32*}> %ptrs_in, <$w x i1> %active_in) #0 ${\n"
         "L0:\n"
-        "   br label %L1\n\n"
+        "    %ptrs_start_0 = select <$w x i1> %active_in, <$w x {i32*}> %ptrs_in, <$w x {i32*}> $z\n"
+        "    %ptrs_start_1 = ptrtoint <$w x {i32*}> %ptrs_start_0 to <$w x i64>\n"
+        "    br label %L1\n\n"
         "L1:\n"
-        "   %index = phi i32 [ 0, %L0 ], [ %index_next, %L1 ]\n"
-        "   %sum = phi i32 [ 0, %L0 ], [ %sum_next, %L1 ]\n"
-        "   %sum_vec = phi <$w x i32> [ undef, %L0 ], [ %sum_vec_next, %L1 ]\n"
-        "   %active_i = extractelement <$w x i1> %active, i32 %index\n"
-        "   %active_u = zext i1 %active_i to i32\n"
-        "   %sum_next = add nuw i32 %sum, %active_u\n"
-        "   %sum_vec_next = insertelement <$w x i32> %sum_vec, i32 %sum, i32 %index\n"
-        "   %index_next = add nuw nsw i32 %index, 1\n"
-        "   %cond_1 = icmp eq i32 %index_next, $w\n"
-        "   br i1 %cond_1, label %L2, label %L1\n\n"
+        "    %ptrs = phi <$w x i64> [ %ptrs_start_1, %L0 ], [ %ptrs_next, %L4 ]\n"
+        "    %out = phi <$w x i32> [ $z, %L0 ], [ %out_next, %L4 ]\n"
+        "    %ptr = call i64 @llvm.vector.reduce.umax.v$wi64(<$w x i64> %ptrs)\n"
+        "    %done = icmp eq i64 %ptr, 0\n"
+        "    br i1 %done, label %L5, label %L2\n\n"
         "L2:\n"
-        "   %cond_2 = icmp eq i32 %sum_next, 0\n"
-        "   br i1 %cond_2, label %L4, label %L3\n\n"
+        "    %ptr_b0 = insertelement <$w x i64> undef, i64 %ptr, i32 0\n"
+        "    %ptr_b1 = shufflevector <$w x i64> %ptr_b0, <$w x i64> undef, <$w x i32> $z\n"
+        "    %active_v = icmp eq <$w x i64> %ptr_b1, %ptrs\n"
+        "    %active_i0 = bitcast <$w x i1> %active_v to i$w\n"
+        "    %active_i1 = zext i$w %active_i0 to i32\n"
+        "    %ptrs_next = select <$w x i1> %active_v, <$w x i64> $z, <$w x i64> %ptrs\n"
+        "    br label %L3\n\n"
         "L3:\n"
-        "   %old_1 = atomicrmw add {i32*} %ptr, i32 %sum_next monotonic\n"
-        "   %old_2 = insertelement <$w x i32> undef, i32 %old_1, i32 0\n"
-        "   %old_3 = shufflevector <$w x i32> %old_2, <$w x i32> undef, <$w x i32> $z\n"
-        "   %sum_vec_final = add <$w x i32> %sum_vec_next, %old_3\n"
-        "   br label %L4\n\n"
+        "    %active = phi i32 [ %active_i1, %L2 ], [ %active_next, %L3 ]\n"
+        "    %accum = phi i32 [ 0, %L2 ], [ %accum_next, %L3 ]\n"
+        "    %out_2 = phi <$w x i32> [ %out, %L2 ], [ %out_2_next, %L3 ]\n"
+        "    %index = call i32 @llvm.cttz.i32(i32 %active, i1 1)\n"
+        "    %index_bit = shl nuw nsw i32 1, %index\n"
+        "    %active_next = xor i32 %active, %index_bit\n"
+        "    %accum_next = add nuw nsw i32 %accum, 1\n"
+        "    %out_2_next = insertelement <$w x i32> %out_2, i32 %accum, i32 %index\n"
+        "    %done_2 = icmp eq i32 %active_next, 0\n"
+        "    br i1 %done_2, label %L4, label %L3\n\n"
         "L4:\n"
-        "   %sum_vec_combined = phi <$w x i32> [ %sum_vec_next, %L2 ], [ %sum_vec_final, %L3 ]\n"
-        "   ret <$w x i32> %sum_vec_combined\n"
+        "    %ptr_p = inttoptr i64 %ptr to {i32*}\n"
+        "    %prev = atomicrmw add {i32*} %ptr_p, i32 %accum_next monotonic\n"
+        "    %prev_b0 = insertelement <$w x i32> undef, i32 %prev, i32 0\n"
+        "    %prev_b1 = shufflevector <$w x i32> %prev_b0, <$w x i32> undef, <$w x i32> $z\n"
+        "    %sum = add <$w x i32> %prev_b1, %out_2_next\n"
+        "    %out_next = select <$w x i1> %active_v, <$w x i32> %sum, <$w x i32> %out\n"
+        "    br label %L1;\n\n"
+        "L5:\n"
+        "    ret <$w x i32> %out\n"
         "$}"
     );
 

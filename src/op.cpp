@@ -1753,11 +1753,6 @@ uint32_t jitc_var_scatter_inc(uint32_t *target_p, uint32_t index, uint32_t mask)
     if ((VarType) index_v->type != VarType::UInt32)
         jitc_raise("jit_var_scatter_inc(): 'index' must be an unsigned 32-bit array.");
 
-    if (index_v->size != 1)
-        jitc_raise("jit_var_scatter_inc(): index must be a scalar! (this is a "
-                   "limitation of the current implementation that enables a "
-                   "particularly simple and efficient implementation)");
-
     if (mask_v->is_literal() && mask_v->literal == 0)
         return 0;
 
