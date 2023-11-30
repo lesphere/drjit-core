@@ -869,6 +869,18 @@ XXH128_hash_t jitc_assemble_func(const CallData *call, uint32_t inst,
 
     for (ScheduledVariable &sv: schedule) {
         Variable *v = jitc_var(sv.index);
+        if (unlikely(v->extra)) {
+            VariableExtra &extra = state.extra[v->extra];
+            if (extra.callback) {
+                if (extra.callback_internal) {
+                    extra.callback(sv.index, 0, extra.callback_data);
+                } else {
+                    unlock_guard guard_2(state.lock);
+                    extra.callback(sv.index, 0, extra.callback_data);
+                }
+                v = jitc_var(sv.index);
+            }
+        }
         v->reg_index = 0;
         v->output_flag = false;
         jitc_var_dec_ref(sv.index, v);

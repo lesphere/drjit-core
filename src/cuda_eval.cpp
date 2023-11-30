@@ -644,7 +644,7 @@ static void jitc_cuda_render(uint32_t index, Variable *v) {
 
         case VarKind::Cast:
             if (jitc_is_bool(v)) {
-                fmt(jitc_is_float(a0) && !jitc_is_half(a0) 
+                fmt(jitc_is_float(a0) && !jitc_is_half(a0)
                     ? "    setp.ne.$t $v, $v, 0.0;\n"
                     : "    setp.ne.$b $v, $v, 0;\n",
                     a0, v, a0);
@@ -990,31 +990,32 @@ static void jitc_cuda_render_scatter_inc(Variable *v,
     bool unmasked = mask->is_literal() && mask->literal == 1;
 
     fmt_intrinsic(
-        ".func (.param .u32 rv) reduce_inc_u32 (.param .u64 ptr) {\n"
-        "    .reg .pred %p<2>;\n"
-        "    .reg .b32 %r<11>;\n"
-        "    .reg .b64 %rd<2>;\n"
+        ".func  (.param .u32 rv) reduce_inc_u32 (.param .u64 ptr) {\n"
+        "    .reg .b64 %rd<1>;\n"
+        "    .reg .pred %p<1>;\n"
+        "    .reg .b32 %r<12>;\n"
         "\n"
-        "    ld.param.u64 %rd1, [ptr];\n"
-        "    activemask.b32 %r2;\n"
-        "    mov.u32 %r3, %lanemask_lt;\n"
-        "    and.b32 %r3, %r3, %r2;\n"
-        "    setp.ne.u32 %p1, %r3, 0;\n"
-        "    @%p1 bra L2;\n"
+        "    ld.param.u64 %rd0, [ptr];\n"
+        "    activemask.b32 %r1;\n"
+        "    match.any.sync.b64 %r2, %rd0, %r1;\n"
+	    "    brev.b32 %r3, %r2;\n"
+	    "    bfind.shiftamt.u32 %r4, %r3;\n"
+        "    mov.u32 %r5, %lanemask_lt;\n"
+        "    and.b32 %r6, %r5, %r2;\n"
+        "    popc.b32 %r7, %r6;\n"
+        "    setp.ne.u32 %p0, %r6, 0;\n"
+        "    @%p0 bra L0;\n"
         "\n"
-        "L1:\n"
-        "    popc.b32 %r4, %r2;\n"
-        "    atom.global.add.u32 %r5, [%rd1], %r4;\n"
+        "    popc.b32 %r8, %r2;\n"
+        "    atom.global.add.u32 %r9, [%rd0], %r8;\n"
         "\n"
-        "L2:\n"
-        "    popc.b32 %r6, %r3;\n"
-        "    brev.b32 %r7, %r2;\n"
-        "    bfind.shiftamt.u32 %r8, %r7;\n"
-        "    shfl.sync.idx.b32 %r9, %r5, %r8, 31, %r2;\n"
-        "    add.u32 %r10, %r6, %r9;\n"
-        "    st.param.u32 [rv], %r10;\n"
+        "L0:\n"
+        "    shfl.sync.idx.b32 %r10, %r9, %r4, 31, %r2;\n"
+        "    add.u32 %r11, %r7, %r10;\n"
+        "    st.param.u32 [rv], %r11;\n"
         "    ret;\n"
-        "}\n");
+        "}\n"
+    );
 
     if (!unmasked)
         fmt("    @!$v bra l_$u_done;\n", mask, v->reg_index);
