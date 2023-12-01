@@ -5,9 +5,9 @@
 #include "eval.h"
 #include "op.h"
 
-uint32_t jitc_var_loop_start(const char *name, size_t n_indices, uint32_t *indices) {
+uint32_t jitc_var_loop_start(const char *name, bool symbolic, size_t n_indices, uint32_t *indices) {
     JitBackend backend = JitBackend::None;
-    bool symbolic = false, dirty = false;
+    bool dirty = false;
 
     // A few sanity checks
     if (!n_indices)
@@ -23,7 +23,6 @@ uint32_t jitc_var_loop_start(const char *name, size_t n_indices, uint32_t *indic
         const Variable *v2 = jitc_var(index);
         if (i == 0) {
             backend = (JitBackend) v2->backend;
-            symbolic = v2->symbolic;
             dirty = v2->is_dirty();
         } else {
             if ((JitBackend) v2->backend != backend)
@@ -31,7 +30,6 @@ uint32_t jitc_var_loop_start(const char *name, size_t n_indices, uint32_t *indic
                     "jit_var_loop_start(): the loop state involves variables with "
                     "different Dr.Jit backends, which is not permitted.");
 
-            symbolic |= v2->symbolic;
             dirty |= v2->is_dirty();
         }
     }
@@ -54,7 +52,7 @@ uint32_t jitc_var_loop_start(const char *name, size_t n_indices, uint32_t *indic
         v.type = (uint32_t) VarType::Void;
         v.size = 1;
         v.backend = (uint32_t) backend;
-        v.symbolic = 1;
+        v.symbolic = symbolic;
 
         jitc_new_scope(backend);
         loop_start = steal(jitc_var_new(v, true));

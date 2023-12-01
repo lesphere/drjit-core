@@ -269,20 +269,15 @@ void jitc_cuda_assemble_func(const CallData *call, uint32_t inst,
     fmt(" $s^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^(",
         uses_optix ? "__direct_callable__" : "func_");
 
-    if (call->use_self) {
-        put(".reg .u32 self");
-        if (!call->data_map.empty() || in_size)
-            put(", ");
-    }
-
-    if (!call->data_map.empty()) {
-        put(".reg .u64 data");
-        if (in_size)
-            put(", ");
-    }
-
+    if (call->use_index)
+        put(".reg .u32 index, ");
+    if (call->use_self)
+        put(".reg .u32 self, ");
+    if (!call->data_map.empty())
+        put(".reg .u64 data, ");
     if (in_size)
-        fmt(".param .align $u .b8 params[$u]", in_align, in_size);
+        fmt(".param .align $u .b8 params[$u], ", in_align, in_size);
+    buffer.delete_trailing_commas();
 
     fmt(") {\n"
         "    // Call: $s\n"
@@ -304,7 +299,9 @@ void jitc_cuda_assemble_func(const CallData *call, uint32_t inst,
                 fmt("    // $s\n", label);
         }
 
-        if (kind == VarKind::CallInput) {
+        if (kind == VarKind::Counter) {
+            fmt("    mov.$b $v, index;\n", v, v);
+        } else if (kind == VarKind::CallInput) {
             Variable *a = jitc_var(v->dep[0]);
             if (vt != VarType::Bool) {
                 fmt("    ld.param.$b $v, [params+$o];\n", v, v, a);
@@ -1253,18 +1250,16 @@ void jitc_var_call_assemble_cuda(CallData *call, uint32_t call_reg,
     if (out_size)
         fmt(" (.param .align $u .b8 result[$u])", out_align, out_size);
     put(" _(");
-    if (call->use_self) {
-        put(".reg .u32 self");
-        if (data_reg || in_size)
-            put(", ");
-    }
-    if (data_reg) {
-        put(".reg .u64 data");
-        if (in_size)
-            put(", ");
-    }
+
+    if (call->use_index)
+        put(".reg .u32 index, ");
+    if (call->use_self)
+        put(".reg .u32 self, ");
+    if (data_reg)
+        put(".reg .u64 data, ");
     if (in_size)
-        fmt(".param .align $u .b8 params[$u]", in_align, in_size);
+        fmt(".param .align $u .b8 params[$u], ", in_align, in_size);
+    buffer.delete_trailing_commas();
     put(");\n");
 
     // Input/output parameter arrays
@@ -1296,16 +1291,25 @@ void jitc_var_call_assemble_cuda(CallData *call, uint32_t call_reg,
             tname, v->param_offset, prefix, v2->reg_index);
     }
 
-    if (call->use_self) {
-        fmt("            call $s%rd2, (%r$u$s$s), proto;\n",
-            out_size ? "(out), " : "", self_reg,
-            data_reg ? ", %rd3" : "",
-            in_size ? ", in" : "");
-    } else {
-        fmt("            call $s%rd2, ($s$s$s), proto;\n",
-            out_size ? "(out), " : "", data_reg ? "%rd3" : "",
-            data_reg && in_size ? ", " : "", in_size ? "in" : "");
+    put("            call ");
+    if (out_size)
+        put("(out), ");
+    put("%rd2, (");
+    if (call->use_index) {
+        if (callable_depth == 0)
+            put("%r0, ");
+        else
+            put("index, ");
     }
+    if (call->use_self)
+        fmt("%r$u, ", self_reg);
+    if (data_reg)
+        put("%rd3, ");
+    if (in_size)
+        put("in, ");
+    buffer.delete_trailing_commas();
+    put("), proto;\n");
+
 
     // =====================================================
     // 5.2. Read back the output arguments

@@ -1462,6 +1462,10 @@ extern JIT_EXPORT void jit_record_end(JIT_ENUM JitBackend backend,
  * \param name
  *    A descriptive name
  *
+ * \param symbolic
+ *    Does this loop occur within a symbolic execution context? (For example,
+ *    is this a symbolic loop nested within another symbolic loop?)
+ *
  * \param n_indices
  *    Number of loop state variables
  *
@@ -1481,6 +1485,7 @@ extern JIT_EXPORT void jit_record_end(JIT_ENUM JitBackend backend,
  *    the function reverts any changes and raises an exception.
  */
 extern JIT_EXPORT uint32_t jit_var_loop_start(const char *name,
+                                              bool symbolic,
                                               size_t n_indices,
                                               uint32_t *indices);
 

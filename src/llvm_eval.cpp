@@ -83,14 +83,18 @@
 
 // Forward declaration
 static void jitc_llvm_render(uint32_t index, Variable *v);
+
 static void jitc_llvm_render_scatter(const Variable *v, const Variable *ptr,
                                      const Variable *value, const Variable *index,
                                      const Variable *mask);
+
 static void jitc_llvm_render_scatter_kahan(const Variable *v, uint32_t index);
+
 static void jitc_llvm_render_scatter_inc(Variable *v,
                                          const Variable *ptr,
                                          const Variable *index,
                                          const Variable *mask);
+
 static void jitc_llvm_render_trace(uint32_t index, const Variable *v,
                                    const Variable *func,
                                    const Variable *scene);
@@ -282,12 +286,15 @@ void jitc_llvm_assemble_func(const CallData *call, uint32_t inst) {
                                  state.log_level_callback) >= LogLevel::Trace ||
                         (jitc_flags() & (uint32_t) JitFlag::PrintIR);
     uint32_t width = jitc_llvm_vector_width, callables_local = callable_count;
+    fmt("define void @func_^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^(<$w x i1> %mask");
+
     if (call->use_self)
-        fmt("define void @func_^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^("
-                    "<$w x i1> %mask, <$w x i32> %self, {i8*} noalias %params");
-    else
-        fmt("define void @func_^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^("
-                    "<$w x i1> %mask, {i8*} noalias %params");
+        fmt(", <$w x i32> %self");
+
+    if (call->use_index)
+        put(", i64 %index");
+
+    fmt(", {i8*} noalias %params");
 
     if (!call->data_map.empty()) {
         if (callable_depth == 1)
@@ -313,18 +320,7 @@ void jitc_llvm_assemble_func(const CallData *call, uint32_t inst) {
                 fmt("    ; $s\n", label);
         }
 
-        if (kind == VarKind::CallInput) {
-            fmt( "    $v_i{0|1} = getelementptr inbounds i8, {i8*} %params, i64 $u\n"
-                "{    $v_i1 = bitcast i8* $v_i0 to $M*\n|}"
-                 "    $v$s = load $M, {$M*} $v_i1, align $A\n",
-                v, jitc_var(v->dep[0])->param_offset * width,
-                v, v, v,
-                v, vt == VarType::Bool ? "_i2" : "", v, v, v, v);
-
-            if (vt == VarType::Bool)
-                fmt("    $v = trunc $M $v_i2 to $T\n",
-                    v, v, v, v);
-        } else if (v->is_evaluated() || vt == VarType::Pointer) {
+        if (v->is_evaluated() || vt == VarType::Pointer) {
             uint64_t key = (uint64_t) sv.index + (((uint64_t) inst) << 32);
             auto it = call->data_map.find(key);
             if (unlikely(it == call->data_map.end())) {
@@ -364,8 +360,26 @@ void jitc_llvm_assemble_func(const CallData *call, uint32_t inst) {
             else if (vt == VarType::Bool)
                 fmt("    $v = trunc <$w x i8> $v_p4 to <$w x i1>\n",
                     v, v);
-        } else {
-            jitc_llvm_render(sv.index, v);
+            continue;
+        }
+
+        switch (kind) {
+            case VarKind::CallInput:
+                fmt( "    $v_i{0|1} = getelementptr inbounds i8, {i8*} %params, i64 $u\n"
+                    "{    $v_i1 = bitcast i8* $v_i0 to $M*\n|}"
+                     "    $v$s = load $M, {$M*} $v_i1, align $A\n",
+                    v, jitc_var(v->dep[0])->param_offset * width,
+                    v, v, v,
+                    v, vt == VarType::Bool ? "_i2" : "", v, v, v, v);
+
+                if (vt == VarType::Bool)
+                    fmt("    $v = trunc $M $v_i2 to $T\n",
+                        v, v, v, v);
+                break;
+
+            default:
+                jitc_llvm_render(sv.index, v);
+                break;
         }
     }
 
@@ -488,6 +502,10 @@ static void jitc_llvm_render(uint32_t index, Variable *v) {
                     v, v, v, a0);
             }
             break;
+        case VarKind::CallInput:
+            fmt("    $v = BAD BAD\n", v);
+            break;
+
 
         case VarKind::Add:
             fmt(jitc_is_float(v) ? "    $v = fadd $V, $v\n"
@@ -1661,6 +1679,9 @@ void jitc_var_call_assemble_llvm(CallData *call, uint32_t call_reg,
         if (call->use_self)
             fmt(", <$w x i32>");
 
+        if (call->use_index)
+            fmt(", i64");
+
         fmt(", i8*");
         if (data_reg)
             fmt(", $<i8*$>, <$w x i32>");
@@ -1674,6 +1695,9 @@ void jitc_var_call_assemble_llvm(CallData *call, uint32_t call_reg,
 
     if (call->use_self)
         fmt(", <$w x i32> %r$u", self_reg);
+
+    if (call->use_index)
+        fmt(", i64 %index");
 
     fmt(", {i8*} %buffer");
 

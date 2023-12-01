@@ -1243,9 +1243,9 @@ VarInfo jit_set_backend(uint32_t index) noexcept {
     return VarInfo{ (JitBackend) var->backend, (VarType) var->type, var->size };
 }
 
-uint32_t jit_var_loop_start(const char *name, size_t n_indices, uint32_t *indices) {
+uint32_t jit_var_loop_start(const char *name, bool symbolic, size_t n_indices, uint32_t *indices) {
     lock_guard guard(state.lock);
-    return jitc_var_loop_start(name, n_indices, indices);
+    return jitc_var_loop_start(name, symbolic, n_indices, indices);
 }
 
 uint32_t jit_var_loop_cond(uint32_t loop, uint32_t active) {

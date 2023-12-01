@@ -49,8 +49,12 @@ struct CallData {
     uint64_t *offset = nullptr;
     size_t offset_size = 0;
 
-    /// Does this call need 'self' as argument?
+    /// Does this call contain a 'CallSelf' variable?
     bool use_self = false;
+    /// Does this call contain a 'Counter' variable?
+    bool use_index = false;
+    /// Does this call contain OptiX operations?
+    bool use_optix = false;
 
     ~CallData() {
         for (uint32_t index : inner_in)

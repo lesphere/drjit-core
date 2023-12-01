@@ -882,7 +882,7 @@ uint32_t jitc_var_undefined(JitBackend backend, VarType type, size_t size) {
 
 uint32_t jitc_var_counter(JitBackend backend, size_t size,
                           bool simplify_scalar) {
-    if (size == 1 && simplify_scalar) {
+    if (size == 1 && simplify_scalar && !jit_flag(JitFlag::Symbolic)) {
         uint32_t zero = 0;
         return jitc_var_literal(backend, VarType::UInt32, &zero, 1, 0);
     }
@@ -1204,7 +1204,7 @@ static void jitc_raise_symbolic_error(const char *func, uint32_t index) {
         "   elements of an array are positive).\n"
         "\n"
         " - You cannot access specific values in 1D arrays (this would require\n"
-        "   the contents to be known.\n"
+        "   the contents to be known.)\n"
         "\n"
         "The common pattern of these limitation is that the contents of symbolic\n"
         "of variables are *simply not known*. Any attempt to access or otherwise\n"

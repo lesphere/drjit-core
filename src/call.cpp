@@ -15,15 +15,13 @@
 #include "util.h"
 #include "op.h"
 #include "profiler.h"
+#include "loop.h"
 #include "call.h"
 #include <set>
 
 static std::vector<CallData *> calls_assembled;
 
-static void jitc_var_call_collect_data(
-    tsl::robin_map<uint64_t, uint32_t, UInt64Hasher> &data_map,
-    uint32_t &data_offset, uint32_t inst_id, uint32_t index, bool &use_self,
-    bool &use_optix);
+extern void jitc_var_call_analyze(CallData *call, uint32_t inst_id, uint32_t index, uint32_t &data_offset);
 
 /// Weave a virtual function call into the computation graph
 void jitc_var_call(const char *name, uint32_t self, uint32_t mask_,
@@ -188,7 +186,6 @@ void jitc_var_call(const char *name, uint32_t self, uint32_t mask_,
 
     // Collect accesses to evaluated variables/pointers
     uint32_t data_size = 0, inst_id_max = 0;
-    bool use_optix = false;
     for (uint32_t i = 0; i < n_inst; ++i) {
         if (unlikely(checkpoints[i] > checkpoints[i + 1]))
             jitc_raise("jitc_var_call(): values in 'checkpoints' are not "
@@ -198,14 +195,13 @@ void jitc_var_call(const char *name, uint32_t self, uint32_t mask_,
         call->data_offset.push_back(data_size);
 
         for (uint32_t j = 0; j < n_out; ++j)
-            jitc_var_call_collect_data(call->data_map, data_size, i,
-                                       inner_out[j + i * n_out],
-                                       call->use_self, use_optix);
+            jitc_var_call_analyze(call.get(), i, inner_out[j + i * n_out],
+                                  data_size);
 
         for (uint32_t j = checkpoints[i]; j != checkpoints[i + 1]; ++j)
-            jitc_var_call_collect_data(call->data_map, data_size, i,
-                                       call->side_effects[j - checkpoints[0]],
-                                       call->use_self, use_optix);
+            jitc_var_call_analyze(call.get(), i,
+                                  call->side_effects[j - checkpoints[0]],
+                                  data_size);
 
         // Restore to full alignment
         data_size = (data_size + 7) / 8 * 8;
@@ -288,7 +284,7 @@ void jitc_var_call(const char *name, uint32_t self, uint32_t mask_,
     call->id = call_v;
     {
         Variable *call_var = jitc_var(call_v);
-        call_var->optix = use_optix;
+        call_var->optix = call->use_optix;
         call_var->data = call.get();
     }
 
@@ -552,28 +548,38 @@ void jitc_var_call_assemble(CallData *call, uint32_t call_reg,
 }
 
 /// Collect scalar / pointer variables referenced by a computation
-void jitc_var_call_collect_data(tsl::robin_map<uint64_t, uint32_t, UInt64Hasher> &data_map,
-                                uint32_t &data_offset, uint32_t inst_id,
-                                uint32_t index, bool &use_self, bool &use_optix) {
+void jitc_var_call_analyze(CallData *call, uint32_t inst_id, uint32_t index,
+                           uint32_t &data_offset) {
     uint64_t key = (uint64_t) index + (((uint64_t) inst_id) << 32);
-    auto it_and_status = data_map.emplace(key, (uint32_t) -1);
+    auto it_and_status = call->data_map.emplace(key, (uint32_t) -1);
     if (!it_and_status.second)
         return;
 
     const Variable *v = jitc_var(index);
 
-#if defined(DRJIT_ENABLE_OPTIX)
-    if ((JitBackend) v->backend == JitBackend::CUDA)
-        use_optix |= v->optix;
-#endif
+    if (v->optix)
+        call->use_optix |= true;
 
-    if ((VarKind) v->kind == VarKind::CallSelf) {
-        use_self = true;
-    } else if ((VarKind) v->kind == VarKind::CallInput) {
+    VarKind kind = (VarKind) v->kind;
+
+    if (kind == VarKind::CallSelf) {
+        call->use_self = true;
+    } else if (kind == VarKind::Counter) {
+        call->use_index = true;
+    } else if (kind == VarKind::CallInput) {
         return;
+    } else if (kind == VarKind::Call) {
+        CallData *call2 = (CallData *) v->data;
+        call->use_self  |= call2->use_self;
+        call->use_optix |= call2->use_optix;
+        call->use_index |= call2->use_index;
+    } else if (kind == VarKind::LoopCond) {
+        LoopData *loop = (LoopData *) jitc_var(v->dep[0])->data;
+        for (uint32_t index_2: loop->inner_out)
+            jitc_var_call_analyze(call, inst_id, index_2, data_offset);
     } else if (v->is_evaluated() || (VarType) v->type == VarType::Pointer) {
-        uint32_t tsize = type_size[v->type];
-        uint32_t offset = (data_offset + tsize - 1) / tsize * tsize;
+        uint32_t tsize = type_size[v->type],
+                 offset = (data_offset + tsize - 1) / tsize * tsize;
         it_and_status.first.value() = offset;
         data_offset = offset + tsize;
 
@@ -585,15 +591,14 @@ void jitc_var_call_collect_data(tsl::robin_map<uint64_t, uint32_t, UInt64Hasher>
                 "evaluated variables can be accessed while recording "
                 "virtual function calls",
                 inst_id, index, type_name[v->type], v->size);
-    } else {
-        for (uint32_t i = 0; i < 4; ++i) {
-            uint32_t index_2 = v->dep[i];
-            if (!index_2)
-                break;
+    }
 
-            jitc_var_call_collect_data(data_map, data_offset, inst_id,
-                                       index_2, use_self, use_optix);
-        }
+    for (int i = 0; i < 4; ++i) {
+        uint32_t index_2 = v->dep[i];
+        if (!index_2)
+            break;
+
+        jitc_var_call_analyze(call, inst_id, index_2, data_offset);
     }
 }
 
