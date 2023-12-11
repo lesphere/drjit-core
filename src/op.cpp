@@ -1679,7 +1679,7 @@ void jitc_var_scatter_reduce_kahan(uint32_t *target_1_p, uint32_t *target_2_p,
         return;
 
     uint32_t flags = jitc_flags();
-    var_info.symbolic |= flags & (uint32_t) JitFlag::Symbolic;
+    var_info.symbolic |= flags & (uint32_t) JitFlag::SymbolicScope;
 
     // Check if it is safe to write directly
     if (target_1_v->ref_count > 2) { // 1 from original array, 1 from borrow above
@@ -1719,7 +1719,7 @@ void jitc_var_scatter_reduce_kahan(uint32_t *target_1_p, uint32_t *target_2_p,
 
     var_info.size = std::max(var_info.size, jitc_var(mask_2)->size);
 
-    bool symbolic = jit_flag(JitFlag::Symbolic);
+    bool symbolic = jit_flag(JitFlag::SymbolicScope);
     if (var_info.symbolic && !symbolic)
         jitc_raise(
             "jit_var_scatter_kahan(): input arrays are symbolic, but the "
@@ -1788,7 +1788,7 @@ uint32_t jitc_var_scatter_inc(uint32_t *target_p, uint32_t index, uint32_t mask)
         return 0;
 
     uint32_t flags = jitc_flags();
-    var_info.symbolic |= flags & (uint32_t) JitFlag::Symbolic;
+    var_info.symbolic |= flags & (uint32_t) JitFlag::SymbolicScope;
 
     // Check if it is safe to write directly
     if (target_v->ref_count > 2) // 1 from original array, 1 from borrow above
@@ -1813,7 +1813,7 @@ uint32_t jitc_var_scatter_inc(uint32_t *target_p, uint32_t index, uint32_t mask)
 
     var_info.size = std::max(var_info.size, jitc_var(mask_2)->size);
 
-    bool symbolic = jit_flag(JitFlag::Symbolic);
+    bool symbolic = jit_flag(JitFlag::SymbolicScope);
     if (var_info.symbolic && !symbolic)
         jitc_raise(
             "jit_var_scatter_inc(): input arrays are symbolic, but the "
@@ -1894,7 +1894,7 @@ uint32_t jitc_var_scatter(uint32_t target_, uint32_t value, uint32_t index,
         jitc_fail("jit_var_scatter(): Only scatter and scatter_reduce_add supported for half-precision variables");
 
     uint32_t flags = jitc_flags();
-    var_info.symbolic |= flags & (uint32_t) JitFlag::Symbolic;
+    var_info.symbolic |= flags & (uint32_t) JitFlag::SymbolicScope;
 
     if (target_v->type != value_v->type)
         jitc_raise("jit_var_scatter(): target/value type mismatch!");
@@ -1938,7 +1938,7 @@ uint32_t jitc_var_scatter(uint32_t target_, uint32_t value, uint32_t index,
 
     var_info.size = std::max(var_info.size, jitc_var(mask_2)->size);
 
-    bool symbolic = jit_flag(JitFlag::Symbolic);
+    bool symbolic = jit_flag(JitFlag::SymbolicScope);
     if (var_info.symbolic && !symbolic)
         jitc_raise(
             "jit_var_scatter(): input arrays are symbolic, but the operation "
