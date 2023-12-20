@@ -211,6 +211,18 @@ uint32_t jitc_var_vcall(const char *name, uint32_t self, uint32_t mask_,
 
     vcall->data_offset.reserve(n_inst);
 
+#if defined(DRJIT_PRINT_DEBUG)
+    jitc_log(
+        InfoSym,
+        "jit_var_vcall(r?, self=r%u): call (\"%s\") with %u instance%s, %u "
+        "input%s, %u output%s (? devirtualized), ? side effect?, ? "
+        "byte? of call data, %u elements?%s",
+        self, name, n_inst, n_inst == 1 ? "" : "s", n_in,
+        n_in == 1 ? "" : "s", n_out, n_out == 1 ? "" : "s",
+        size,
+        placeholder ? " (part of a recorded computation)" : "");
+#endif
+
     // Collect accesses to evaluated variables/pointers
     uint32_t data_size = 0, inst_id_max = 0;
     bool use_optix = false;
@@ -714,6 +726,25 @@ void jitc_var_vcall_collect_data(tsl::robin_map<uint64_t, uint32_t, UInt64Hasher
         use_optix |= v->optix;
 #endif
 
+#if defined(DRJIT_PRINT_DEBUG)
+    if (v->extra) {
+        jitc_log(InfoSym,
+                 "label of v = %s\nindex of v = r%d\nv->vcall_iface = %d\n"
+                 "v->is_data() = %d\n"
+                 "(VarType) v->type == VarType::Pointer = %d\nv->size = %d\n"
+                 "inst_id = %d\n",
+                 state.extra[index].label, index, v->vcall_iface, v->is_data(),
+                 (VarType) v->type == VarType::Pointer, v->size, inst_id);
+    } else {
+        jitc_log(InfoSym,
+                 "index of v = r%d\nv->vcall_iface = %d\nv->is_data() = %d\n"
+                 "(VarType) v->type == VarType::Pointer = %d\nv->size = %d\n"
+                 "inst_id = %d\n",
+                 index, v->vcall_iface, v->is_data(),
+                 (VarType) v->type == VarType::Pointer, v->size, inst_id);
+    }
+#endif
+
     if (v->vcall_iface) {
         return;
     } else if (v->is_data() || (VarType) v->type == VarType::Pointer) {
@@ -897,6 +928,14 @@ VCallBucket *jitc_var_vcall_reduce(JitBackend backend, const char *domain,
         jitc_trace("jit_var_vcall_reduce(): registered variable %u: bucket %u "
                    "(" DRJIT_PTR ") of size %u.", index2, bucket_out.id,
                    (uintptr_t) bucket_out.ptr, bucket.size);
+#define DEBUG_PRINT
+#if defined(DEBUG_PRINT)
+        fprintf(stderr, "In vcall.cpp jitc_var_vcall_reduce(): registered variable %u: bucket %u "
+                "(" DRJIT_PTR ") of size %u.\n",
+                index2, bucket_out.id, (uintptr_t) bucket_out.ptr, bucket.size);
+        fprintf(stderr, "domain = %s, id = %u\n", domain ? domain : "", bucket.id);
+#endif
+#undef DEBUG_PRINT
     }
 
     jitc_var_dec_ref(perm_var);
