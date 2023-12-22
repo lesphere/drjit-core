@@ -928,7 +928,7 @@ VCallBucket *jitc_var_vcall_reduce(JitBackend backend, const char *domain,
         jitc_trace("jit_var_vcall_reduce(): registered variable %u: bucket %u "
                    "(" DRJIT_PTR ") of size %u.", index2, bucket_out.id,
                    (uintptr_t) bucket_out.ptr, bucket.size);
-#define DEBUG_PRINT
+//#define DEBUG_PRINT
 #if defined(DEBUG_PRINT)
         fprintf(stderr, "In vcall.cpp jitc_var_vcall_reduce(): registered variable %u: bucket %u "
                 "(" DRJIT_PTR ") of size %u.\n",
