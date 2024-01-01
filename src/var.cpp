@@ -1274,7 +1274,7 @@ uint32_t jitc_var_resize(uint32_t index, size_t size) {
         jitc_var_inc_ref(index, v);
         return index; // Nothing to do
     } else if (v->size != 1 && !v->is_literal()) {
-        jitc_raise("jit_var_resize(): variable %u must be scalar or value!", index);
+        jitc_raise("jit_var_resize(): variable %u must be scalar or value! size = %u, is_literal() = %d", index, v->size, v->is_literal());
     }
 
     if (v->is_dirty()) {
